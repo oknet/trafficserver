@@ -33,6 +33,8 @@
 // Global Data
 //
 
+EventType ET_QUIC;
+
 QUICNetProcessor quic_NetProcessor;
 
 QUICNetProcessor::QUICNetProcessor()
@@ -48,11 +50,28 @@ void
 QUICNetProcessor::cleanup()
 {
   SSL_CTX_free(this->_ssl_ctx);
+  this->_ssl_ctx = nullptr;
 }
 
 int
-QUICNetProcessor::start(int, size_t stacksize)
+QUICNetProcessor::start(int n_quic_threads, size_t stacksize)
 {
+  quicNetAccept_offset = eventProcessor.allocate(sizeof(QUICNetAccept));
+
+  if (n_quic_threads > 0) {
+    ET_QUIC = eventProcessor.register_event_type("ET_QUIC");
+    eventProcessor.schedule_spawn(&initialize_thread_for_quic_net, ET_QUIC);
+    eventProcessor.spawn_event_threads(ET_QUIC, n_quic_threads, stacksize);
+  } else {
+    ET_QUIC = ET_NET;
+    // Initialize QUIC on ET_NET
+	int i, n = eventProcessor.thread_group[ET_QUIC]._count;
+	for (i = 0; i < n; i++) {
+      EThread *t = eventProcessor.thread_group[ET_QUIC]._thread[i];
+      initialize_thread_for_quic_net(t);
+    }
+  }
+
   QUIC::init();
   // This initialization order matters ...
   // QUICInitializeLibrary();
@@ -65,22 +84,24 @@ QUICNetProcessor::start(int, size_t stacksize)
   // QUICInitializeStatistics();
 
   // TODO: load certs from SSLConfig
-  this->_ssl_ctx = SSL_CTX_new(TLS_method());
-  SSL_CTX_set_min_proto_version(this->_ssl_ctx, TLS1_3_VERSION);
-  SSL_CTX_set_max_proto_version(this->_ssl_ctx, TLS1_3_VERSION);
-  SSL_CTX_set_alpn_select_cb(this->_ssl_ctx, QUIC::ssl_select_next_protocol, nullptr);
-  SSL_CTX_add_custom_ext(this->_ssl_ctx, QUICTransportParametersHandler::TRANSPORT_PARAMETER_ID,
+  SSL_CTX *ctx = SSL_CTX_new(TLS_method());
+  SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+  SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+  SSL_CTX_set_alpn_select_cb(ctx, QUIC::ssl_select_next_protocol, nullptr);
+  SSL_CTX_add_custom_ext(ctx, QUICTransportParametersHandler::TRANSPORT_PARAMETER_ID,
                          SSL_EXT_TLS_ONLY | SSL_EXT_CLIENT_HELLO | SSL_EXT_TLS1_3_ENCRYPTED_EXTENSIONS,
                          &QUICTransportParametersHandler::add, &QUICTransportParametersHandler::free, nullptr,
                          &QUICTransportParametersHandler::parse, nullptr);
 
   SSLConfig::scoped_config params;
-  SSLParseCertificateConfiguration(params, this->_ssl_ctx);
+  SSLParseCertificateConfiguration(params, ctx);
 
-  if (SSL_CTX_check_private_key(this->_ssl_ctx) != 1) {
+  if (SSL_CTX_check_private_key(ctx) != 1) {
     Error("check private key failed");
     ink_assert(false);
   }
+
+  this->_ssl_ctx = ctx;
 
   return 0;
 }
@@ -88,7 +109,7 @@ QUICNetProcessor::start(int, size_t stacksize)
 NetAccept *
 QUICNetProcessor::createNetAccept(const NetProcessor::AcceptOptions &opt)
 {
-  return (NetAccept *)new QUICPacketHandler(opt, this->_ssl_ctx);
+  return (NetAccept *)new QUICPacketHandler(opt);
 }
 
 NetVConnection *
@@ -144,6 +165,7 @@ QUICNetProcessor::main_accept(Continuation *cont, SOCKET fd, AcceptOptions const
   na->action_         = new NetAcceptAction();
   *na->action_        = cont;
   na->action_->server = &na->server;
+
   na->init_accept();
 
   udpNet.UDPBind((Continuation *)na, &na->server.accept_addr.sa, 1048576, 1048576);

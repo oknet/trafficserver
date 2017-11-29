@@ -63,6 +63,13 @@ public:
   virtual NetVConnection *allocate_vc(EThread *t) override;
 
   Action *main_accept(Continuation *cont, SOCKET fd, AcceptOptions const &opt) override;
+  SSL_CTX *get_ssl_ctx()
+  {
+    ink_release_assert(_ssl_ctx != nullptr);
+    return _ssl_ctx;
+  }
+
+  off_t quicNetAccept_offset;
 
 private:
   QUICNetProcessor(const QUICNetProcessor &);
@@ -71,4 +78,8 @@ private:
   SSL_CTX *_ssl_ctx = nullptr;
 };
 
+extern EventType ET_QUIC;
 extern QUICNetProcessor quic_NetProcessor;
+
+extern void initialize_thread_for_quic_net(EThread *thread);
+

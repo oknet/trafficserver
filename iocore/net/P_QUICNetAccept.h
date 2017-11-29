@@ -24,25 +24,40 @@
 #pragma once
 
 #include "ts/ink_platform.h"
-#include "P_Connection.h"
-#include "P_NetAccept.h"
-#include "quic/QUICTypes.h"
 
-class QUICNetVConnection;
-class QUICPacket;
+//
+// QUICNetAccept
+// Handles accepting connections.
+//
+struct QUICNetAccept : public Continuation {
+  explicit QUICNetAccept();
+  virtual ~QUICNetAccept();
 
-struct QUICPacketHandler : public NetAccept {
-public:
-  QUICPacketHandler(const NetProcessor::AcceptOptions &opt);
-  virtual ~QUICPacketHandler();
+  virtual NetProcessor *getNetProcessor() const;
 
-  virtual NetProcessor *getNetProcessor() const override;
-  virtual NetAccept *clone() const override;
-  virtual int acceptEvent(int event, void *e) override;
-  void init_accept(EThread *t) override;
-  void send_packet(const QUICPacket &packet, QUICNetVConnection *vc);
-  void send_packet(const QUICPacket &packet, UDPConnection *udp_con, IpEndpoint &addr, uint32_t pmtu);
+  virtual void init_accept_per_thread();
+
+  virtual int mainEvent(int event, void *e);
+
+
+  void process_long_header_packets();
+  void process_short_header_packets();
+  void process_newconn();
+
+  EThread *thread;
+  // Atomic Queue to save Long Header Packet
+  ASLL(UDPPacketInternal, alink) longInQueue;
+  // Atomic Queue to save Short Header Packet
+  ASLL(UDPPacketInternal, alink) shortInQueue;
+  // Internal Queue to save 0-RTT Packet
+  Que(UDPPacket, link) zeroRTTQueue;
 
 private:
   Map<int64_t, QUICNetVConnection *> _connections;
 };
+
+static inline QUICNetAccept *
+get_QUICNetAccept(EThread *t) 
+{
+  return (QUICNetAccept *)ETHREAD_GET_PTR(t, quic_NetProcessor.quicNetAccept_offset);
+}

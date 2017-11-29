@@ -27,7 +27,7 @@
 #include "QUICDebugNames.h"
 #include "QUICEvents.h"
 
-QUICPacketHandler::QUICPacketHandler(const NetProcessor::AcceptOptions &opt, SSL_CTX *ctx) : NetAccept(opt), _ssl_ctx(ctx)
+QUICPacketHandler::QUICPacketHandler(const NetProcessor::AcceptOptions &opt) : NetAccept(opt)
 {
   this->mutex = new_ProxyMutex();
 }
@@ -46,7 +46,7 @@ NetAccept *
 QUICPacketHandler::clone() const
 {
   NetAccept *na;
-  na  = new QUICPacketHandler(opt, this->_ssl_ctx);
+  na  = new QUICPacketHandler(opt);
   *na = *this;
   return na;
 }
@@ -66,8 +66,36 @@ QUICPacketHandler::acceptEvent(int event, void *data)
   } else if (event == NET_EVENT_DATAGRAM_READ_READY) {
     Queue<UDPPacket> *queue = (Queue<UDPPacket> *)data;
     UDPPacket *packet_r;
+    int n = eventProcessor.thread_group[ET_QUIC]._count;
     while ((packet_r = queue->dequeue())) {
-      this->_recv_packet(event, packet_r);
+      uint8_t *buf = (uint8_t *)packet_r->getIOBlockChain()->buf();
+      if (buf[0] & 0x80 && 1 <= (buf[0] & 0x7f) && (buf[0] & 0x7f) <= 5) {
+        // Long Header Packet with Connection ID, has a valid type value.
+        // Get QUICNetAccept by Hash(Source IP & Port)
+        uint32_t v        = ats_ip_port_hash(&packet_r->from.sa);
+        EThread *t        = eventProcessor.thread_group[ET_QUIC]._thread[v % n];
+        QUICNetAccept *na = get_QUICNetAccept(t);
+        na->longInQueue.push((UDPPacketInternal *)packet_r);
+      } else if (buf[0] & 0x40 && 1 <= (buf[0] & 0x1f) && (buf[0] & 0x1f) <= 3) {
+        // Short Header Packet with Connection ID, has a valid type value.
+        // Get QUICNetAccept by Hash(QUIC Connection ID)
+		uint64_t v        = QUICTypeUtil::read_QUICConnectionId(buf + 1, 8);
+        EThread *t        = eventProcessor.thread_group[ET_QUIC]._thread[v % n];
+        QUICNetAccept *na = get_QUICNetAccept(t);
+        na->shortInQueue.push((UDPPacketInternal *)packet_r);
+      } else if (1 <= (buf[0] & 0x1f) && (buf[0] & 0x1f) <= 3) {
+        // Short Header Packet without Connection ID, has a valid type value.
+        // TODO: Assign Connection ID by rules
+        ip_port_text_buffer ipb;
+        Debug("quic_sec", "Received a short header packet without ConnID from %s, size=%" PRId64,
+              ats_ip_nptop(&packet_r->from.sa, ipb, sizeof(ipb)), packet_r->getPktLength());
+        packet_r->free();
+      } else {
+        ip_port_text_buffer ipb;
+        Debug("quic_sec", "Received a bad packet from %s, size=%" PRId64, ats_ip_nptop(&packet_r->from.sa, ipb, sizeof(ipb)),
+              packet_r->getPktLength());
+        packet_r->free();
+      }
     }
     return EVENT_CONT;
   }
@@ -87,124 +115,4 @@ void
 QUICPacketHandler::init_accept(EThread *t = nullptr)
 {
   SET_HANDLER(&QUICPacketHandler::acceptEvent);
-}
-
-// TODO: Integrate with QUICPacketHeader::connection_id()
-bool
-QUICPacketHandler::_read_connection_id(QUICConnectionId &cid, IOBufferBlock *block)
-{
-  const uint8_t *buf       = reinterpret_cast<const uint8_t *>(block->buf());
-  const uint8_t cid_offset = 1;
-  const uint8_t cid_len    = 8;
-
-  if (QUICTypeUtil::hasLongHeader(buf)) {
-    cid = QUICTypeUtil::read_QUICConnectionId(buf + cid_offset, cid_len);
-  } else {
-    if (buf[0] & 0x40) {
-      cid = QUICTypeUtil::read_QUICConnectionId(buf + cid_offset, cid_len);
-    } else {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-void
-QUICPacketHandler::_recv_packet(int event, UDPPacket *udpPacket)
-{
-  IOBufferBlock *block = udpPacket->getIOBlockChain();
-
-  QUICConnectionId cid;
-  bool res = this->_read_connection_id(cid, block);
-
-  ip_port_text_buffer ipb;
-  Debug("quic_sec", "[%" PRIx64 "] received packet from %s, size=%" PRId64, static_cast<uint64_t>(cid),
-        ats_ip_nptop(&udpPacket->from.sa, ipb, sizeof(ipb)), udpPacket->getPktLength());
-
-  QUICNetVConnection *vc = nullptr;
-  if (res) {
-    vc = this->_connections.get(cid);
-  } else {
-    // TODO: find vc from five tuples
-    ink_assert(false);
-  }
-
-  if (!vc) {
-    Connection con;
-    con.setRemote(&udpPacket->from.sa);
-
-    // Send stateless reset if the packet is not a initial packet
-    if (!QUICTypeUtil::hasLongHeader(reinterpret_cast<const uint8_t *>(block->buf()))) {
-      QUICStatelessToken token;
-      {
-        QUICConfig::scoped_config params;
-        token.generate(cid ^ params->server_id());
-      }
-      auto packet = QUICPacketFactory::create_stateless_reset_packet(cid, token);
-      this->send_packet(*packet, udpPacket->getConnection(), con.addr, 1200);
-      return;
-    }
-
-    // Create a new NetVConnection
-    vc =
-      static_cast<QUICNetVConnection *>(getNetProcessor()->allocate_vc(((UnixUDPConnection *)udpPacket->getConnection())->ethread));
-    vc->init(cid, udpPacket->getConnection(), this);
-    vc->id = net_next_connection_number();
-    vc->con.move(con);
-    vc->submit_time = Thread::get_hrtime();
-    vc->mutex       = this->mutex;
-    vc->action_     = *this->action_;
-    vc->set_is_transparent(this->opt.f_inbound_transparent);
-    vc->set_context(NET_VCONNECTION_IN);
-    vc->read.triggered = 1;
-    vc->start(this->_ssl_ctx);
-    vc->options.ip_proto  = NetVCOptions::USE_UDP;
-    vc->options.ip_family = udpPacket->from.sa.sa_family;
-
-    this->_connections.put(cid, vc);
-    this->action_->continuation->handleEvent(NET_EVENT_ACCEPT, vc);
-  }
-
-  if (vc->is_closed()) {
-    this->_connections.put(vc->connection_id(), nullptr);
-    // FIXME QUICNetVConnection is NOT freed to prevent crashes. #2674
-    // QUICNetVConnections are going to be freed by QUICNetHandler
-    // vc->free(vc->thread);
-  } else {
-    vc->push_packet(udpPacket);
-    eventProcessor.schedule_imm(vc, ET_CALL, QUIC_EVENT_PACKET_READ_READY, nullptr);
-  }
-}
-
-// TODO: Should be called via eventProcessor?
-void
-QUICPacketHandler::send_packet(const QUICPacket &packet, QUICNetVConnection *vc)
-{
-  // TODO: remove a connection which is created by Client Initial
-  //       or update key to new one
-  if (!this->_connections.get(packet.connection_id())) {
-    this->_connections.put(packet.connection_id(), vc);
-  }
-
-  this->send_packet(packet, vc->get_udp_con(), vc->con.addr, vc->pmtu());
-}
-
-void
-QUICPacketHandler::send_packet(const QUICPacket &packet, UDPConnection *udp_con, IpEndpoint &addr, uint32_t pmtu)
-{
-  size_t udp_len;
-  Ptr<IOBufferBlock> udp_payload(new_IOBufferBlock());
-  udp_payload->alloc(iobuffer_size_to_index(pmtu));
-  packet.store(reinterpret_cast<uint8_t *>(udp_payload->end()), &udp_len);
-  udp_payload->fill(udp_len);
-
-  UDPPacket *udpPkt = new_UDPPacket(addr, 0, udp_payload);
-
-  // NOTE: p will be enqueued to udpOutQueue of UDPNetHandler
-  ip_port_text_buffer ipb;
-  Debug("quic_sec", "[%" PRIx64 "] send %s packet to %s, size=%" PRId64, static_cast<uint64_t>(packet.connection_id()),
-        QUICDebugNames::packet_type(packet.type()), ats_ip_nptop(&udpPkt->to.sa, ipb, sizeof(ipb)), udpPkt->getPktLength());
-
-  udp_con->send(this, udpPkt);
 }
