@@ -70,6 +70,7 @@ public:
   udppacket_data_t data;
 
   LINK(UDPPacket, link);
+  LINK(UDPPacket, alink);
 };
 
 /**

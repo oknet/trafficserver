@@ -47,15 +47,12 @@ QUICPollCont::~QUICPollCont()
 int
 QUICPollCont::pollEvent(int, Event *)
 {
-  UnixUDPConnection *uc;
-  QUICPacketHandler *ph;
   QUICNetVConnection *vc;
   QUICConnectionId cid;
   uint8_t *buf;
-  uint8_t ptype;
-  UDPPacket *packet_r;
+  QUICPacketType ptype;
   UDPPacketInternal *p = nullptr;
-  NetHandler *nh       = get_NetHandler(t);
+  NetHandler *nh       = get_NetHandler(this->mutex->thread_holding);
 
   // Process the ASLL
   SList(UDPPacketInternal, alink) aq(inQueue.popall());
@@ -65,21 +62,19 @@ QUICPollCont::pollEvent(int, Event *)
   }
 
   while ((p = result.pop())) {
-    uc  = static_cast<UnixUDPConnection *>(p->getConnection());
-    ph  = static_cast<QUICPacketHandler *>(uc->continuation);
     vc  = static_cast<QUICNetVConnection *>(p->data.ptr);
     buf = (uint8_t *)p->getIOBlockChain()->buf();
-    cid = QUICPacket::connection_id(buf)
-    if (buf[0] & 0x80) { // Long Header Packet with Connection ID, has a valid type value.
-      ptype = buf[0] & 0x7f;
+    cid = QUICPacket::connection_id(buf);
+    if (QUICTypeUtil::has_long_header(buf)) { // Long Header Packet with Connection ID, has a valid type value.
+      ptype = static_cast<QUICPacketType>(buf[0] & 0x7f);
       if (ptype == QUICPacketType::INITIAL) { // Initial Packet
         vc->read.triggered = 1;
         vc->push_packet(p);
         // reschedule the vc and callback vc->acceptEvent
         this_ethread()->schedule_imm(vc);
-      } elseif (ptype == QUICPacketType::ZERO_RTT_PROTECTED) { // 0-RTT Packet
+      } else if (ptype == QUICPacketType::ZERO_RTT_PROTECTED) { // 0-RTT Packet
         // TODO:
-      } elseif (ptype == QUICPacketType::HANDSHAKE) { // Handshake Packet
+      } else if (ptype == QUICPacketType::HANDSHAKE) { // Handshake Packet
         if (vc) {
           vc->read.triggered = 1;
           vc->push_packet(p);
@@ -89,15 +84,13 @@ QUICPollCont::pollEvent(int, Event *)
       } else {
         ink_assert(!"not reached!");
       }
-    } elseif (buf[0] & 0x40) { // Short Header Packet with Connection ID, has a valid type value.
+    } else { // Short Header Packet with Connection ID, has a valid type value.
       if (vc) {
         vc->read.triggered = 1;
         vc->push_packet(p);
       } else {
         shortInQueue.push(p);
       }
-    } else {
-      ink_assert(!"not reached!");
     }
 
     // Push QUICNetVC into nethandler's enabled list
