@@ -144,6 +144,9 @@ public:
   QUICNetVConnection() {}
   void init(QUICConnectionId cid, UDPConnection *, QUICPacketHandler *);
 
+  // accept new conn_id
+  int acceptEvent(int event, Event *e);
+
   // UnixNetVConnection
   void reenable(VIO *vio) override;
   VIO *do_io_read(Continuation *c, int64_t nbytes, MIOBuffer *buf) override;
@@ -198,6 +201,8 @@ public:
   // QUICConnection (QUICFrameHandler)
   std::vector<QUICFrameType> interests() override;
   QUICErrorUPtr handle_frame(std::shared_ptr<const QUICFrame> frame) override;
+
+  MIOBuffer *read_buffer = nullptr;
 
 private:
   class AltConnectionInfo
