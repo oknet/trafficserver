@@ -144,7 +144,7 @@ public:
   QUICNetVConnection() {}
   void init(QUICConnectionId cid, UDPConnection *, QUICPacketHandler *);
 
-	// accept new conn_id
+  // accept new conn_id
   int acceptEvent(int event, Event *e);
 
   // UnixNetVConnection

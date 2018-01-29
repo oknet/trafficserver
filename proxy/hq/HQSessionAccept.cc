@@ -38,7 +38,7 @@ HQSessionAccept::~HQSessionAccept()
 }
 
 bool
-HQSessionAccept::accept(NetVConnection *netvc, MIOBuffer *iobuf, IOBufferReader *reader)
+HQSessionAccept::accept(QUICNetVConnection *qvc, MIOBuffer *iobuf, IOBufferReader *reader)
 {
   sockaddr const *client_ip           = netvc->get_remote_addr();
   const AclRecord *session_acl_record = testIpAllowPolicy(client_ip);
@@ -57,6 +57,9 @@ HQSessionAccept::accept(NetVConnection *netvc, MIOBuffer *iobuf, IOBufferReader 
           ats_ip_nptop(client_ip, ipb, sizeof(ipb)), netvc->attributes);
   }
 
+  // TODO: Call QUICClientSession
+  // new_session = new QUICClientSession(qvc)
+  // new_session->new_connection(qvc, iobuf, reader, backdoor)
   new QUICSimpleApp(static_cast<QUICNetVConnection *>(netvc));
 
   return true;
@@ -65,14 +68,14 @@ HQSessionAccept::accept(NetVConnection *netvc, MIOBuffer *iobuf, IOBufferReader 
 int
 HQSessionAccept::mainEvent(int event, void *data)
 {
-  NetVConnection *netvc;
+  QUICNetVConnection *qvc;
   ink_release_assert(event == NET_EVENT_ACCEPT || event == EVENT_ERROR);
   ink_release_assert((event == NET_EVENT_ACCEPT) ? (data != nullptr) : (1));
 
   if (event == NET_EVENT_ACCEPT) {
-    netvc = static_cast<NetVConnection *>(data);
-    if (!this->accept(netvc, nullptr, nullptr)) {
-      netvc->do_io_close();
+    qvc = static_cast<QUICNetVConnection *>(data);
+    if (!this->accept(qvc, nullptr, nullptr)) {
+      qvc->do_io_close();
     }
     return EVENT_CONT;
   }

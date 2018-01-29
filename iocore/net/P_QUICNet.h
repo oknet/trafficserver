@@ -49,6 +49,10 @@ public:
   Que(UDPPacket, link) longInQueue;
   // Internal Queue to save Short Header Packet
   Que(UDPPacket, link) shortInQueue;
+
+private:
+  void _process_short_header_packet(UDPPacketInternal *p, NetHandler *nh);
+  void _process_long_header_packet(UDPPacketInternal *p, NetHandler *nh);
 };
 
 static inline QUICPollCont *

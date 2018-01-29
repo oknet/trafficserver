@@ -189,17 +189,17 @@ QUICPacketHandlerIn::_recv_packet(int event, UDPPacket *udp_packet)
   // should we use dynamic_cast ??
   get_QUICPollCont(eth)->inQueue.push(static_cast<UDPPacketInternal *>(udp_packet));
 
-/*
-  if (vc->is_closed()) {
-    this->_connections.put(vc->connection_id(), nullptr);
-    // FIXME QUICNetVConnection is NOT freed to prevent crashes. #2674
-    // QUICNetVConnections are going to be freed by QUICNetHandler
-    // vc->free(vc->thread);
-  } else {
-    vc->push_packet(udp_packet);
-    eventProcessor.schedule_imm(vc, ET_CALL, QUIC_EVENT_PACKET_READ_READY, nullptr);
-  }
-*/
+  /*
+    if (vc->is_closed()) {
+      this->_connections.put(vc->connection_id(), nullptr);
+      // FIXME QUICNetVConnection is NOT freed to prevent crashes. #2674
+      // QUICNetVConnections are going to be freed by QUICNetHandler
+      // vc->free(vc->thread);
+    } else {
+      vc->push_packet(udp_packet);
+      eventProcessor.schedule_imm(vc, ET_CALL, QUIC_EVENT_PACKET_READ_READY, nullptr);
+    }
+  */
 }
 
 // TODO: Should be called via eventProcessor?
