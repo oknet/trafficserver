@@ -27,8 +27,8 @@
 #include <bitset>
 
 #include "ts/ink_platform.h"
-
 #include "P_Net.h"
+
 class NetHandler;
 typedef int (NetHandler::*NetContHandler)(int, void *);
 

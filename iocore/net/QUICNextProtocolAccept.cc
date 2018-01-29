@@ -48,16 +48,20 @@ quic_netvc_cast(int event, void *edata)
 int
 QUICNextProtocolAccept::mainEvent(int event, void *edata)
 {
-  QUICNetVConnection *netvc = quic_netvc_cast(event, edata);
+  QUICNetVConnection *qvc = quic_netvc_cast(event, edata);
 
-  Debug("quic", "[QUICNextProtocolAccept:mainEvent] event %d netvc %p", event, netvc);
+  Debug("quic", "[QUICNextProtocolAccept:mainEvent] event %d netvc %p", event, qvc);
   switch (event) {
   case NET_EVENT_ACCEPT:
-    ink_release_assert(netvc != nullptr);
-    netvc->registerNextProtocolSet(&this->protoset);
+    ink_release_assert(qvc != nullptr);
+    qvc->registerNextProtocolSet(&this->protoset);
+    if (qvc->read_buffer != nullptr) {
+      qvc->read_buffer = new_MIOBuffer(BUFFER_SIZE_INDEX_2K);
+    }
+    qvc->do_io_read(qvc, INT64_MAX, qvc->read_buffer);
     return EVENT_CONT;
   default:
-    netvc->do_io_close();
+    qvc->do_io_close();
     return EVENT_DONE;
   }
 }

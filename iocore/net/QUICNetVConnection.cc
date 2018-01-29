@@ -190,6 +190,10 @@ QUICNetVConnection::free(EThread *t)
   // TODO: clear member variables like `UnixNetVConnection::free(EThread *t)`
   this->mutex.clear();
 
+  if (this->read_buffer) {
+    free_MIOBuffer(this->read_buffer);
+  }
+
   if (from_accept_thread) {
     quicNetVCAllocator.free(this);
   } else {

@@ -52,8 +52,6 @@ private:
   HQSessionAccept &operator=(const HQSessionAccept &);
 
   HttpSessionAccept::Options options;
-
-  MIOBuffer *read_buffer;
 };
 
 #endif // __HTTP_QUIC_SESSION_ACCEPT_H__

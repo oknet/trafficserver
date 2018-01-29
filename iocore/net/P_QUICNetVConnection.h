@@ -202,6 +202,8 @@ public:
   std::vector<QUICFrameType> interests() override;
   QUICErrorUPtr handle_frame(std::shared_ptr<const QUICFrame> frame) override;
 
+  MIOBuffer *read_buffer = nullptr;
+
 private:
   class AltConnectionInfo
   {
