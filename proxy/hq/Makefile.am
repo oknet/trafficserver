@@ -39,6 +39,7 @@ libhq_a_SOURCES = \
   HQSessionAccept.cc \
   HQClientSession.cc \
   HQClientTransaction.cc \
+  HQClientAccept.cc \
   QUICSimpleApp.cc
 
 tidy-local: $(libhq_a_SOURCES) \

@@ -22,6 +22,7 @@
  */
 
 #include "HQSessionAccept.h"
+#include "HQClientAccept.h"
 
 #include "P_Net.h"
 #include "I_Machine.h"
@@ -35,10 +36,13 @@ HQSessionAccept::HQSessionAccept(const HttpSessionAccept::Options &_o) : Session
 
 HQSessionAccept::~HQSessionAccept()
 {
+  if (this->read_buffer) {
+    free_MIOBuffer(this->read_buffer);
+  }
 }
 
 bool
-HQSessionAccept::accept(QUICNetVConnection *qvc, MIOBuffer *iobuf, IOBufferReader *reader)
+HQSessionAccept::accept(NetVConnection *netvc, MIOBuffer *iobuf, IOBufferReader *reader)
 {
   sockaddr const *client_ip           = netvc->get_remote_addr();
   const AclRecord *session_acl_record = testIpAllowPolicy(client_ip);
@@ -48,6 +52,10 @@ HQSessionAccept::accept(QUICNetVConnection *qvc, MIOBuffer *iobuf, IOBufferReade
     return false;
   }
   netvc->attributes = this->options.transport_type;
+  this->read_buffer = iobuf ? iobuf : new_MIOBuffer(BUFFER_SIZE_INDEX_2K);
+
+  // FIXME: Bad Hack
+  QUICNetVConnection *qvc = static_cast<QUICNetVConnection *>(netvc);
 
   if (is_debug_tag_set("quic_seq")) {
     ip_port_text_buffer ipb;
@@ -60,7 +68,11 @@ HQSessionAccept::accept(QUICNetVConnection *qvc, MIOBuffer *iobuf, IOBufferReade
   // TODO: Call QUICClientSession
   // new_session = new QUICClientSession(qvc)
   // new_session->new_connection(qvc, iobuf, reader, backdoor)
-  new QUICSimpleApp(static_cast<QUICNetVConnection *>(netvc));
+  // new QUICSimpleApp(static_cast<QUICNetVConnection *>(netvc));
+  HQClientAccept *stream_acceptor = new HQClientAccept(this->options);
+  qvc->action_                    = stream_acceptor;
+
+  qvc->do_io_read(qvc, INT64_MAX, this->read_buffer);
 
   return true;
 }
@@ -68,14 +80,14 @@ HQSessionAccept::accept(QUICNetVConnection *qvc, MIOBuffer *iobuf, IOBufferReade
 int
 HQSessionAccept::mainEvent(int event, void *data)
 {
-  QUICNetVConnection *qvc;
+  NetVConnection *netvc;
   ink_release_assert(event == NET_EVENT_ACCEPT || event == EVENT_ERROR);
   ink_release_assert((event == NET_EVENT_ACCEPT) ? (data != nullptr) : (1));
 
   if (event == NET_EVENT_ACCEPT) {
-    qvc = static_cast<QUICNetVConnection *>(data);
-    if (!this->accept(qvc, nullptr, nullptr)) {
-      qvc->do_io_close();
+    netvc = static_cast<NetVConnection *>(data);
+    if (!this->accept(netvc, nullptr, nullptr)) {
+      netvc->do_io_close();
     }
     return EVENT_CONT;
   }
