@@ -1121,14 +1121,14 @@ struct MultiCacheHeapGC : public Continuation {
     if (partition < MULTI_CACHE_PARTITIONS) {
       // copy heap data
 
-      char *before = mc->heap + mc->heap_used[mc->heap_halfspace];
+      char *before = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
       mc->copy_heap(partition, this);
-      char *after = mc->heap + mc->heap_used[mc->heap_halfspace];
+      char *after = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
 
       // sync new heap data and header (used)
 
       if (after - before > 0) {
-        ink_assert(!ats_msync(before, after - before, mc->heap + mc->totalsize, MS_SYNC));
+        ink_assert(!ats_msync(before, after - before, mc->heap + mc->heap_size, MS_SYNC));
         ink_assert(!ats_msync((char *)mc->mapped_header, STORE_BLOCK_SIZE, (char *)mc->mapped_header + STORE_BLOCK_SIZE, MS_SYNC));
       }
       // update table to point to new entries
@@ -1140,7 +1140,7 @@ struct MultiCacheHeapGC : public Continuation {
         i1  = offset_table[i].poffset;
         i2  = offset_table[i].new_offset + 1;
         *i1 = i2;
-      }
+      } 
       n_offsets = 0;
       mc->sync_partition(partition);
       partition++;
