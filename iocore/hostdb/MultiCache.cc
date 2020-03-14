@@ -1261,8 +1261,14 @@ MultiCacheBase::alloc(int *poffset, int asize)
 {
   int h    = heap_halfspace;
   int size = (asize + MULTI_CACHE_HEAP_ALIGNMENT - 1) & ~(MULTI_CACHE_HEAP_ALIGNMENT - 1);
-  int o    = ink_atomic_increment((int *)&heap_used[h], size);
 
+  int part = ptr_to_partition((char *)poffset);
+  if (poffset && part < 0) {
+    Debug("multicache", "poffset (%p) is invalid, valid range from %p to %p", poffset, data, heap - 1);
+    return NULL;
+  }
+
+  int o = ink_atomic_increment((int *)&heap_used[h], size);
   if (o + size > halfspace_size()) {
     ink_atomic_increment((int *)&heap_used[h], -size);
     ink_assert(!"out of space");
@@ -1270,12 +1276,10 @@ MultiCacheBase::alloc(int *poffset, int asize)
       *poffset = 0;
     return NULL;
   }
+
   int offset = (h ? halfspace_size() : 0) + o;
   char *p    = heap + offset;
   if (poffset) {
-    int part = ptr_to_partition((char *)poffset);
-    if (part < 0)
-      return NULL;
     UnsunkPtr *up = unsunk[part].alloc(poffset);
     up->offset    = offset;
     up->poffset   = poffset;
