@@ -346,7 +346,7 @@ struct MultiCacheBase : public MultiCacheHeader {
   int sync_heap(int part); // part varies between 0 and MULTI_CACHE_PARTITIONS
   int sync_header();
   int sync_partition(int partition);
-  void sync_partitions(Continuation *cont);
+  void sync_partitions(Continuation *cont, int frequency);
 
   MultiCacheBase();
   virtual ~MultiCacheBase() { reset(); }

@@ -383,7 +383,7 @@ HostDBSyncer::sync_event(int, void *)
 {
   SET_HANDLER(&HostDBSyncer::wait_event);
   start_time = Thread::get_hrtime();
-  hostDBProcessor.cache()->sync_partitions(this);
+  hostDBProcessor.cache()->sync_partitions(this, hostdb_sync_frequency - 5);
   return EVENT_DONE;
 }
 
@@ -393,10 +393,16 @@ HostDBSyncer::wait_event(int, void *)
   ink_hrtime next_sync = HRTIME_SECONDS(hostdb_sync_frequency) - (Thread::get_hrtime() - start_time);
 
   SET_HANDLER(&HostDBSyncer::sync_event);
-  if (next_sync > HRTIME_MSECONDS(100))
+  if (next_sync > HRTIME_MSECONDS(100)) {
     eventProcessor.schedule_in(this, next_sync, ET_TASK);
-  else
+  } else {
+    if (next_sync < 0) {
+      Warning("The HostDB did not sync to disk in time (delayed %" PRId64
+              " secs), please increase the sync time by proxy.config.cache.hostdb.sync_frequency",
+              ink_hrtime_to_sec(-next_sync));
+    }
     eventProcessor.schedule_imm(this, ET_TASK);
+  }
   return EVENT_DONE;
 }
 

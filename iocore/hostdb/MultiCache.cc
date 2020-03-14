@@ -988,67 +988,74 @@ struct MultiCacheSync;
 typedef int (MultiCacheSync::*MCacheSyncHandler)(int, void *);
 
 struct MultiCacheSync : public Continuation {
+  int frequency;
   int partition;
   MultiCacheBase *mc;
   Continuation *cont;
   int before_used;
+  ink_hrtime time_per_partition;
+  ink_hrtime time_start;
 
   int
   heapEvent(int event, Event *e)
   {
     if (!partition) {
-      before_used     = mc->heap_used[mc->heap_halfspace];
+      // Make a snapshot for MultiCache header
       mc->header_snap = *(MultiCacheHeader *)mc;
+      before_used     = mc->header_snap.heap_used[mc->header_snap.heap_halfspace];
     }
     if (partition < MULTI_CACHE_PARTITIONS) {
       mc->sync_heap(partition++);
       e->schedule_imm();
       return EVENT_CONT;
     }
+    // Sync the snapshot to disk
     *mc->mapped_header = mc->header_snap;
     ink_assert(!ats_msync((char *)mc->mapped_header, STORE_BLOCK_SIZE, (char *)mc->mapped_header + STORE_BLOCK_SIZE, MS_SYNC));
+
     partition = 0;
     SET_HANDLER((MCacheSyncHandler)&MultiCacheSync::mcEvent);
-    return mcEvent(event, e);
+
+    ink_hrtime now = Thread::get_hrtime();
+    Debug("multicache", "MultiCacheSync heapEvent done (elapsed: %" PRId64 " secs)", ink_hrtime_to_sec(now - time_start));
+    time_per_partition = (HRTIME_SECONDS(frequency) - (now - time_start)) / MULTI_CACHE_PARTITIONS;
+    time_start         = now;
+    mutex              = mc->locks[partition];
+    e->schedule_imm();
+    return EVENT_CONT;
   }
 
   int
   mcEvent(int event, Event *e)
   {
     (void)event;
-    if (partition >= MULTI_CACHE_PARTITIONS) {
-      cont->handleEvent(MULTI_CACHE_EVENT_SYNC, 0);
-      Debug("multicache", "MultiCacheSync done (%d, %d)", mc->heap_used[0], mc->heap_used[1]);
-      delete this;
-      return EVENT_DONE;
-    }
     mc->fixup_heap_offsets(partition, before_used);
     mc->sync_partition(partition);
     partition++;
-    mutex = e->ethread->mutex;
-    SET_HANDLER((MCacheSyncHandler)&MultiCacheSync::pauseEvent);
-    e->schedule_in(MAX(MC_SYNC_MIN_PAUSE_TIME, HRTIME_SECONDS(hostdb_sync_frequency - 5) / MULTI_CACHE_PARTITIONS));
-    return EVENT_CONT;
+
+    if (partition < MULTI_CACHE_PARTITIONS) {
+      ink_hrtime time_rest = time_start + time_per_partition * partition - Thread::get_hrtime();
+      mutex                = mc->locks[partition];
+      e->schedule_in(time_rest > MC_SYNC_MIN_PAUSE_TIME ? time_rest : MC_SYNC_MIN_PAUSE_TIME);
+      return EVENT_CONT;
+    } else {
+      eventProcessor.schedule_imm(cont, ET_TASK, MULTI_CACHE_EVENT_SYNC, nullptr);
+      Debug("multicache", "MultiCacheSync done (%d, %d), half = %d", mc->heap_used[0], mc->heap_used[1], mc->heap_halfspace);
+      delete this;
+      return EVENT_DONE;
+    }
   }
 
-  int
-  pauseEvent(int event, Event *e)
+  MultiCacheSync(Continuation *acont, MultiCacheBase *amc, int afreq)
+    : Continuation(amc->locks[0]),
+      frequency(afreq),
+      partition(0),
+      mc(amc),
+      cont(acont),
+      before_used(0),
+      time_per_partition(0),
+      time_start(Thread::get_hrtime())
   {
-    (void)event;
-    (void)e;
-    if (partition < MULTI_CACHE_PARTITIONS)
-      mutex = mc->locks[partition];
-    else
-      mutex = cont->mutex;
-    SET_HANDLER((MCacheSyncHandler)&MultiCacheSync::mcEvent);
-    e->schedule_imm();
-    return EVENT_CONT;
-  }
-
-  MultiCacheSync(Continuation *acont, MultiCacheBase *amc)
-    : Continuation(amc->locks[0]), partition(0), mc(amc), cont(acont), before_used(0)
-  {
-    mutex = mc->locks[partition];
     SET_HANDLER((MCacheSyncHandler)&MultiCacheSync::heapEvent);
   }
 };
@@ -1113,73 +1120,79 @@ struct MultiCacheHeapGC : public Continuation {
   int partition;
   int n_offsets;
   OffsetTable *offset_table;
+  ink_hrtime time_per_partition;
+  ink_hrtime time_start;
 
   int
   startEvent(int event, Event *e)
   {
     (void)event;
-    if (partition < MULTI_CACHE_PARTITIONS) {
-      // copy heap data
 
-      char *before = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
-      mc->copy_heap(partition, this);
-      char *after = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
+    // copy heap data
+    char *before = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
+    mc->copy_heap(partition, this);
+    char *after = mc->heap + mc->heap_halfspace * mc->halfspace_size() + mc->heap_used[mc->heap_halfspace];
 
-      // sync new heap data and header (used)
-
-      if (after - before > 0) {
-        ink_assert(!ats_msync(before, after - before, mc->heap + mc->heap_size, MS_SYNC));
-        ink_assert(!ats_msync((char *)mc->mapped_header, STORE_BLOCK_SIZE, (char *)mc->mapped_header + STORE_BLOCK_SIZE, MS_SYNC));
-      }
-      // update table to point to new entries
-
-      for (int i = 0; i < n_offsets; i++) {
-        int *i1, i2;
-        // BAD CODE GENERATION ON THE ALPHA
-        //*(offset_table[i].poffset) = offset_table[i].new_offset + 1;
-        i1  = offset_table[i].poffset;
-        i2  = offset_table[i].new_offset + 1;
-        *i1 = i2;
-      } 
-      n_offsets = 0;
-      mc->sync_partition(partition);
-      partition++;
-      if (partition < MULTI_CACHE_PARTITIONS)
-        mutex = mc->locks[partition];
-      else
-        mutex = cont->mutex;
-      e->schedule_in(MAX(MC_SYNC_MIN_PAUSE_TIME, HRTIME_SECONDS(hostdb_sync_frequency - 5) / MULTI_CACHE_PARTITIONS));
-      return EVENT_CONT;
+    // sync new heap data and header (used)
+    if (after - before > 0) {
+      ink_assert(!ats_msync(before, after - before, mc->heap + mc->heap_size, MS_SYNC));
+      ink_assert(!ats_msync((char *)mc->mapped_header, STORE_BLOCK_SIZE, (char *)mc->mapped_header + STORE_BLOCK_SIZE, MS_SYNC));
     }
-    mc->heap_used[mc->heap_halfspace ? 0 : 1] = 8; // skip 0
-    cont->handleEvent(MULTI_CACHE_EVENT_SYNC, 0);
-    Debug("multicache", "MultiCacheHeapGC done");
-    delete this;
-    return EVENT_DONE;
+
+    // update table to point to new entries
+    for (int i = 0; i < n_offsets; i++) {
+      int *i1, i2;
+      // BAD CODE GENERATION ON THE ALPHA
+      //*(offset_table[i].poffset) = offset_table[i].new_offset + 1;
+      i1  = offset_table[i].poffset;
+      i2  = offset_table[i].new_offset + 1;
+      *i1 = i2;
+    }
+    n_offsets = 0;
+    mc->sync_partition(partition);
+    partition++;
+
+    if (partition < MULTI_CACHE_PARTITIONS) {
+      ink_hrtime time_rest = time_start + time_per_partition * partition - Thread::get_hrtime();
+      mutex                = mc->locks[partition];
+      e->schedule_in(time_rest > MC_SYNC_MIN_PAUSE_TIME ? time_rest : MC_SYNC_MIN_PAUSE_TIME);
+      return EVENT_CONT;
+    } else {
+      mc->heap_used[mc->heap_halfspace ? 0 : 1] = 8; // skip 0
+      eventProcessor.schedule_imm(cont, ET_TASK, MULTI_CACHE_EVENT_SYNC, nullptr);
+      Debug("multicache", "MultiCacheHeapGC done");
+      delete this;
+      return EVENT_DONE;
+    }
   }
 
-  MultiCacheHeapGC(Continuation *acont, MultiCacheBase *amc)
-    : Continuation(amc->locks[0]), cont(acont), mc(amc), partition(0), n_offsets(0)
+  MultiCacheHeapGC(Continuation *acont, MultiCacheBase *amc, int afreq)
+    : Continuation(amc->locks[0]),
+      cont(acont),
+      mc(amc),
+      partition(0),
+      n_offsets(0),
+      time_per_partition(HRTIME_SECONDS(afreq) / MULTI_CACHE_PARTITIONS),
+      time_start(Thread::get_hrtime())
   {
     SET_HANDLER((MCacheHeapGCHandler)&MultiCacheHeapGC::startEvent);
     offset_table = (OffsetTable *)ats_malloc(sizeof(OffsetTable) *
                                              ((mc->totalelements / MULTI_CACHE_PARTITIONS) + mc->elements[mc->levels - 1] * 3 + 1));
     // flip halfspaces
-    mutex              = mc->locks[partition];
     mc->heap_halfspace = mc->heap_halfspace ? 0 : 1;
   }
   ~MultiCacheHeapGC() { ats_free(offset_table); }
 };
 
 void
-MultiCacheBase::sync_partitions(Continuation *cont)
+MultiCacheBase::sync_partitions(Continuation *cont, int frequency)
 {
   // don't try to sync if we were not correctly initialized
   if (data && mapped_header) {
     if (heap_used[heap_halfspace] > halfspace_size() * MULTI_CACHE_HEAP_HIGH_WATER)
-      eventProcessor.schedule_imm(new MultiCacheHeapGC(cont, this), ET_TASK);
+      eventProcessor.schedule_imm(new MultiCacheHeapGC(cont, this, frequency), ET_TASK);
     else
-      eventProcessor.schedule_imm(new MultiCacheSync(cont, this), ET_TASK);
+      eventProcessor.schedule_imm(new MultiCacheSync(cont, this, frequency), ET_TASK);
   }
 }
 
