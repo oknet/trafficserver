@@ -1080,7 +1080,7 @@ MultiCacheBase::fixup_heap_offsets(int partition, int before_used, UnsunkPtrRegi
           ink_assert(0);
           *p.poffset = 0;
         } else {
-          if (p.offset < before_used) {
+          if (p.offset < before_used + heap_halfspace * halfspace_size()) {
             *p.poffset = p.offset + 1;
             ink_assert(*p.poffset);
           } else
