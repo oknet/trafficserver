@@ -155,7 +155,6 @@ struct HostDBInfo {
   }
 
   char *hostname();
-  char *perm_hostname();
   char *srvname(HostDBRoundRobin *rr);
   /// Check if this entry is an element of a round robin entry.
   /// If @c true then this entry is part of and was obtained from a round robin root. This is useful if the
@@ -247,8 +246,6 @@ struct HostDBInfo {
     int hostname_offset; ///< Some hostname thing.
     SRVInfo srv;
   } data;
-
-  int hostname_offset; // always maintain a permanent copy of the hostname for non-rev dns records.
 
   unsigned int ip_timestamp;
   // limited to HOST_DB_MAX_TTL (0x1FFFFF, 24 days)

@@ -1342,18 +1342,6 @@ HostDBContinuation::lookup_done(IpAddr const &ip, char const *aname, bool around
     }
   }
 
-  if (aname) {
-    const size_t s_size = strlen(aname) + 1;
-    void *host_dest     = hostDB.alloc(&i->hostname_offset, s_size);
-    if (host_dest) {
-      ink_strlcpy((char *)host_dest, aname, s_size);
-    } else {
-      Warning("Out of room in hostdb for hostname (data area full!)");
-      hostDB.delete_block(i);
-      return NULL;
-    }
-  }
-
   if (from_cont)
     do_put_response(from, i, from_cont);
   ink_assert(!i->round_robin || !i->reverse_dns);
@@ -2305,18 +2293,6 @@ HostDBInfo::hostname()
   return (char *)hostDB.ptr(&data.hostname_offset, hostDB.ptr_to_partition((char *)this));
 }
 
-/*
- * The perm_hostname exists for all records not just reverse dns records.
- */
-char *
-HostDBInfo::perm_hostname()
-{
-  if (hostname_offset == 0)
-    return NULL;
-
-  return (char *)hostDB.ptr(&hostname_offset, hostDB.ptr_to_partition((char *)this));
-}
-
 HostDBRoundRobin *
 HostDBInfo::rr()
 {
@@ -2494,12 +2470,6 @@ struct ShowHostDB : public ShowCont {
       CHECK_SHOW(show("<tr><td>%s</td><td>%s%s %s</td></tr>\n", "Type", r->round_robin ? "Round-Robin" : "",
                       r->reverse_dns ? "Reverse DNS" : "", r->is_srv ? "SRV" : "DNS"));
 
-      if (r->perm_hostname()) {
-        CHECK_SHOW(show("<tr><td>%s</td><td>%s</td></tr>\n", "Hostname", r->perm_hostname()));
-      } else if (rr && r->is_srv && hostdb_rr) {
-        CHECK_SHOW(show("<tr><td>%s</td><td>%s</td></tr>\n", "Hostname", r->srvname(hostdb_rr)));
-      }
-
       // Let's display the MD5.
       CHECK_SHOW(show("<tr><td>%s</td><td>%0.16llx %0.8x %0.8x</td></tr>\n", "MD5 (high, low, low low)", r->md5_high, r->md5_low,
                       r->md5_low_low));
@@ -2517,6 +2487,8 @@ struct ShowHostDB : public ShowCont {
         CHECK_SHOW(show("<tr><td>%s</td><td>%d</td></tr>\n", "Priority", r->data.srv.srv_priority));
         CHECK_SHOW(show("<tr><td>%s</td><td>%d</td></tr>\n", "Port", r->data.srv.srv_port));
         CHECK_SHOW(show("<tr><td>%s</td><td>%x</td></tr>\n", "Key", r->data.srv.key));
+      } else if (r->reverse_dns) {
+        CHECK_SHOW(show("<tr><td>%s</td><td>%s</td></tr>\n", "Hostname", r->hostname() ? r->hostname() : "<none>"));
       } else if (!r->is_srv) {
         CHECK_SHOW(show("<tr><td>%s</td><td>%s</td></tr>\n", "IP", ats_ip_ntop(r->ip(), b, sizeof b)));
       }
@@ -2526,12 +2498,6 @@ struct ShowHostDB : public ShowCont {
       CHECK_SHOW(show("{"));
       CHECK_SHOW(show("\"%s\":\"%s%s%s\",", "type", (r->round_robin && !r->is_srv) ? "roundrobin" : "",
                       r->reverse_dns ? "reversedns" : "", r->is_srv ? "srv" : "dns"));
-
-      if (r->perm_hostname()) {
-        CHECK_SHOW(show("\"%s\":\"%s\",", "hostname", r->perm_hostname()));
-      } else if (rr && r->is_srv && hostdb_rr) {
-        CHECK_SHOW(show("\"%s\":\"%s\",", "hostname", r->srvname(hostdb_rr)));
-      }
 
       CHECK_SHOW(show("\"%s\":\"%u\",", "app1", r->app.allotment.application1));
       CHECK_SHOW(show("\"%s\":\"%u\",", "app2", r->app.allotment.application2));
@@ -2547,6 +2513,8 @@ struct ShowHostDB : public ShowCont {
         CHECK_SHOW(show("\"%s\":\"%d\",", "priority", r->data.srv.srv_priority));
         CHECK_SHOW(show("\"%s\":\"%d\",", "port", r->data.srv.srv_port));
         CHECK_SHOW(show("\"%s\":\"%x\",", "key", r->data.srv.key));
+      } else if (r->reverse_dns) {
+        CHECK_SHOW(show("\"%s\":\"%s\"", "hostname", r->hostname() ? r->hostname() : "<none>"));
       } else if (!r->is_srv) {
         CHECK_SHOW(show("\"%s\":\"%s\"", "ip", ats_ip_ntop(r->ip(), b, sizeof b)));
       }
